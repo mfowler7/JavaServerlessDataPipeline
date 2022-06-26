@@ -1,8 +1,10 @@
 package book.pipeline.bulk;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import com.amazonaws.services.lambda.runtime.events.S3Event;
 import com.amazonaws.services.s3.AmazonS3;
@@ -18,37 +20,49 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import book.pipeline.common.WeatherEvent;
 
 public class BulkEventsLambda {
+    static String FAN_OUT_TOPIC_ENV = "FAN_OUT_TOPIC";
     private final ObjectMapper objectMapper = new ObjectMapper()
         .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-    private final AmazonSNS sns = AmazonSNSClientBuilder.defaultClient();
-    private final AmazonS3 s3 = AmazonS3ClientBuilder.defaultClient();
-    private final String snsTopic = System.getenv("FAN_OUT_TOPIC");
+
+    private final AmazonSNS sns;
+    private final AmazonS3 s3;
+    private final String snsTopic;
+
+    public BulkEventsLambda() {
+        this(AmazonSNSClientBuilder.defaultClient(), AmazonS3ClientBuilder.defaultClient());
+    }
+
+    public BulkEventsLambda(AmazonSNS sns, AmazonS3 s3) {
+        this.sns = sns;
+        this.s3 = s3;
+        this.snsTopic = System.getenv(FAN_OUT_TOPIC_ENV);
+
+        if (this.snsTopic == null) {
+            throw new RuntimeException(String.format("%s must be set", FAN_OUT_TOPIC_ENV));
+        }
+    }
 
     public void handler(S3Event event) {
-        event.getRecords().forEach(this::processs3EventRecord);
-    }
 
-    private void processs3EventRecord(S3EventNotification.S3EventNotificationRecord record) {
-        final List<WeatherEvent> weatherEvents = 
-            readWeatherEventsFromS3(
-                record.getS3().getBucket().getName(),
-                record.getS3().getObject().getKey()
-            );
+        List<WeatherEvent> events = event.getRecords().stream()
+            .map(this::getObjectFromS3)
+            .map(this::readWeatherEvents)
+            .flatMap(List::stream)
+            .collect(Collectors.toList());
 
-        weatherEvents.stream()
+        // Serialize and publish WeatherEvent messages to SNS.
+        events.stream()
             .map(this::weatherEventToSnsMessage)
-            .forEach(message -> sns.publish(snsTopic, message));
+            .forEach(this::publishToSns);
 
-        System.out.println("Published " + weatherEvents.size() + " weather events to SNS");
+        // Record in CloudWatch the number of SNS messages published.
+        System.out.print("Published " + events.size() + " weather events to SNS.");
     }
 
-    private List<WeatherEvent> readWeatherEventsFromS3(String bucket, String key) {
-        try {
-            final S3ObjectInputStream s3is = s3.getObject(bucket, key).getObjectContent();
-            final WeatherEvent[] weatherEvents = objectMapper.readValue(s3is, WeatherEvent[].class);
-            s3is.close();
-
-            return Arrays.asList(weatherEvents);
+    List<WeatherEvent> readWeatherEvents(InputStream inputStream) {
+        try (InputStream is = inputStream) {
+            return Arrays.asList(
+                objectMapper.readValue(is, WeatherEvent[].class));
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -60,5 +74,16 @@ public class BulkEventsLambda {
         } catch (JsonProcessingException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private InputStream getObjectFromS3(S3EventNotification.S3EventNotificationRecord record) {
+        String bucket = record.getS3().getBucket().getName();
+        String key = record.getS3().getObject().getKey();
+
+        return s3.getObject(bucket, key).getObjectContent();
+    }
+
+    private void publishToSns(String message) {
+        sns.publish(snsTopic, message);
     }
 }

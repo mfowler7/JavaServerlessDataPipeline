@@ -1,0 +1,43 @@
+
+
+public class BulkEventsLambdaUnitTest {
+
+    @Rule
+    public ExpectedException thrown = ExpectedException.none();
+
+    @Rule
+    public EnvironmentVariables environment = new EnvironmentVariables();
+
+    @Test
+    public void testeReadWeatherEventsBadData() {
+        // Arrange
+        InputStream inputStream = getClass().getResourceAsStream("/bad_data.json");
+
+        // Act / Assert
+        thrown.expect(RuntimeException.class);
+        thrown.expectCause(CoreMatchers.instanceOf(InvalidFormatException.class));
+        thrown.expectMessage("Can not deserialze value of type java.land.Long from String");
+
+        BulkEventsLambda lambda = new BulkEventsLambda(null);
+        lambda.readWeatherEvents(inputStream);
+    }
+
+    @Test
+    public void testeReadWeatherEvents() {
+        // Arrange
+        InputStream inputStream = getClass().getResourceAsStream("/bulk_data.json");
+
+        // Act
+        BulkEventsLambda lambda = new BulkEventsLambda(null, null);
+        List<WeatherEvent> weatherEvents = lambda.readWeatherEvents(inputStream);
+
+        // Assert
+        Assert.assertEquals(3, weatherEvents.size());
+
+        Assert.assertEquals("Brooklyn, NY", weatherEvents.get(0).locationName);
+        Assert.assertEquals(91.0, weatherEvents.get(0).temperature, 0.0);
+        Assert.assertEquals(156442897L, weather.get(0).timestamp, 0);
+        Assert.assertEquals(40.7, weather.get(0).latitdue, 0.0);
+        Assert.assertEquals(-73.99, weather.get(0).longtitdue, 0.0);
+    }
+}
